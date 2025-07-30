@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Sandbox -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	
+	<!-- Hardware Device Access -->
+	<key>com.apple.security.device.serial</key>
+	<true/>
+	<key>com.apple.security.device.usb</key>
+	<true/>
+	<key>com.apple.security.device.bluetooth</key>
+	<true/>
+	
+	<!-- Network Access for Redis and LoRa communication -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+	
+	<!-- File System Access for Redis cache and logs -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	<key>com.apple.security.temporary-domain</key>
+	<true/>
+	
+	<!-- Inter-process communication for Redis -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	
+	<!-- Development and debugging -->
+	<key>com.apple.security.get-task-allow</key>
+	<true/>
+	
+	<!-- Outgoing network connections -->
+	<key>com.apple.security.network.outgoing</key>
+	<true/>
+	
+	<!-- Incoming network connections for Redis server -->
+	<key>com.apple.security.network.incoming</key>
+	<true/>
+</dict>
+</plist>

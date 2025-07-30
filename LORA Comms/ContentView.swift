@@ -6,81 +6,81 @@
 //
 
 import SwiftUI
-import CoreData
+
+// MARK: - Main Content View with Carbon Design System
 
 struct ContentView: View {
-    @Environment(\.managedObjectContext) private var viewContext
-
-    @FetchRequest(
-        sortDescriptors: [NSSortDescriptor(keyPath: \Item.timestamp, ascending: true)],
-        animation: .default)
-    private var items: FetchedResults<Item>
-
+    @EnvironmentObject var themeManager: ThemeManager
+    @StateObject private var deviceManager = DeviceManager()
+    @StateObject private var meshtasticManager: MeshtasticManager
+    
+    @State private var selectedSidebarItem: String? = "chats"
+    @State private var isSidebarCollapsed = false
+    
+    init() {
+        let deviceManager = DeviceManager()
+        self._deviceManager = StateObject(wrappedValue: deviceManager)
+        self._meshtasticManager = StateObject(wrappedValue: MeshtasticManager(deviceManager: deviceManager))
+    }
+    
     var body: some View {
-        NavigationView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp!, formatter: itemFormatter)")
-                    } label: {
-                        Text(item.timestamp!, formatter: itemFormatter)
-                    }
+        NavigationSplitView {
+            CarbonSidebar(
+                selectedItem: $selectedSidebarItem,
+                items: sidebarItems,
+                isCollapsed: isSidebarCollapsed,
+                onToggleCollapse: {
+                    isSidebarCollapsed.toggle()
                 }
-                .onDelete(perform: deleteItems)
+            )
+        } content: {
+            // Primary content list based on sidebar selection
+            switch selectedSidebarItem {
+            case "chats":
+                ChatListView(meshtasticManager: meshtasticManager)
+            case "devices":
+                DeviceListView(deviceManager: deviceManager)
+            case "network":
+                NetworkVisualizerView(meshtasticManager: meshtasticManager)
+            default:
+                Text("Select a section")
+                    .foregroundColor(themeManager.theme.textSecondaryColor)
+                    .font(themeManager.theme.font)
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
+        } detail: {
+            // Detail view based on primary content selection
+            switch selectedSidebarItem {
+            case "chats":
+                ChatDetailView(meshtasticManager: meshtasticManager)
+            case "devices":
+                DeviceDetailView(deviceManager: deviceManager)
+            case "network":
+                Text("Select a node to view details")
+                    .foregroundColor(themeManager.theme.textSecondaryColor)
+                    .font(themeManager.theme.font)
+            default:
+                Text("Select an item")
+                    .foregroundColor(themeManager.theme.textSecondaryColor)
+                    .font(themeManager.theme.font)
             }
-            Text("Select an item")
         }
+        .navigationTitle("LORA Comms")
+        .background(themeManager.theme.backgroundColor)
+        .foregroundColor(themeManager.theme.textColor)
     }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(context: viewContext)
-            newItem.timestamp = Date()
-
-            do {
-                try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
-            }
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            offsets.map { items[$0] }.forEach(viewContext.delete)
-
-            do {
-                try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
-            }
-        }
+    
+    private var sidebarItems: [SidebarItem] {
+        [
+            SidebarItem(id: "chats", title: "Chats", icon: "message", badge: "3"),
+            SidebarItem(id: "devices", title: "Devices", icon: "antenna.radiowaves.left.and.right"),
+            SidebarItem(id: "network", title: "Network", icon: "network"),
+            SidebarItem(id: "settings", title: "Settings", icon: "gear")
+        ]
     }
 }
 
-private let itemFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .short
-    formatter.timeStyle = .medium
-    return formatter
-}()
+// MARK: - Previews
 
 #Preview {
-    ContentView().environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
+    ContentView()
 }
