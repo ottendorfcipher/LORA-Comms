@@ -1,0 +1,9 @@
+# Help GitHub language detection
+*.swift linguist-language=Swift
+*.rs linguist-language=Rust
+*.proto linguist-language=Protocol-Buffer
+*.pbxproj linguist-generated=true
+*.xcworkspacedata linguist-generated=true
+*.plist linguist-generated=true
+*.xcdatamodel linguist-generated=true
+build.rs linguist-language=Rust
