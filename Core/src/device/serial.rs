@@ -1,15 +1,26 @@
 use super::{Device, DeviceError, DeviceInfo, DeviceType};
-use crate::protocol::{MeshMessage, NodeInfo, ProtocolHandler};
+use crate::protocol::{MeshMessage, NodeInfo, ProtocolHandler, MeshPacket, decode_packet, encode_packet, extract_frame_from_buffer};
+use crate::radio::RadioConfig;
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use tokio::sync::mpsc;
+use tokio::time::{timeout, sleep};
+use bytes::BytesMut;
+use crc::{Crc, CRC_16_IBM_3740};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct SerialDevice {
     path: String,
-    port: Option<SerialStream>,
+    port: Option<Arc<Mutex<SerialStream>>>,
     is_connected: bool,
     protocol_handler: ProtocolHandler,
+    message_tx: Option<mpsc::UnboundedSender<MeshPacket>>,
+    config_id: u32,
+    my_node_num: u32,
+    buffer: BytesMut,
 }
 
 impl SerialDevice {
@@ -19,14 +30,166 @@ impl SerialDevice {
             port: None,
             is_connected: false,
             protocol_handler: ProtocolHandler::new(),
+            message_tx: None,
+            config_id: rand::random(),
+            my_node_num: 0,
+            buffer: BytesMut::new(),
         })
     }
 
+    /// Send a protobuf message with proper framing
+    async fn send_protobuf_message(&self, packet: &MeshPacket) -> Result<(), DeviceError> {
+        if let Some(port) = &self.port {
+            let encoded = encode_packet(packet).map_err(|e| DeviceError::ConnectionFailed {
+                message: format!("Failed to encode packet: {}", e),
+            })?;
+            
+            // Meshtastic serial protocol uses HDLC-like framing
+            let framed = self.frame_message(&encoded);
+            
+            let mut port_guard = port.lock().await;
+            port_guard.write_all(&framed).await.map_err(|e| DeviceError::ConnectionFailed {
+                message: format!("Failed to write to serial port: {}", e),
+            })?;
+            port_guard.flush().await.map_err(|e| DeviceError::ConnectionFailed {
+                message: format!("Failed to flush serial port: {}", e),
+            })?;
+            
+            Ok(())
+        } else {
+            Err(DeviceError::ConnectionFailed {
+                message: "Device not connected".to_string(),
+            })
+        }
+    }
+    
+    /// Frame a message using HDLC-like framing for Meshtastic serial protocol
+    fn frame_message(&self, data: &[u8]) -> Vec<u8> {
+        const FRAME_START: u8 = 0x94;
+        const FRAME_END: u8 = 0x7E;
+        const ESCAPE: u8 = 0x7D;
+        const ESCAPE_XOR: u8 = 0x20;
+        
+        let mut framed = Vec::new();
+        framed.push(FRAME_START);
+        
+        // Calculate CRC16
+        let crc = Crc::<u16>::new(&CRC_16_IBM_3740);
+        let checksum = crc.checksum(data);
+        
+        // Escape and add data
+        for &byte in data {
+            if byte == FRAME_START || byte == FRAME_END || byte == ESCAPE {
+                framed.push(ESCAPE);
+                framed.push(byte ^ ESCAPE_XOR);
+            } else {
+                framed.push(byte);
+            }
+        }
+        
+        // Add CRC (little endian)
+        let crc_bytes = checksum.to_le_bytes();
+        for &byte in &crc_bytes {
+            if byte == FRAME_START || byte == FRAME_END || byte == ESCAPE {
+                framed.push(ESCAPE);
+                framed.push(byte ^ ESCAPE_XOR);
+            } else {
+                framed.push(byte);
+            }
+        }
+        
+        framed.push(FRAME_END);
+        framed
+    }
+    
+    /// Process incoming serial data and extract complete frames
+    async fn process_incoming_data(&mut self, new_data: &[u8]) -> Result<Vec<MeshPacket>, DeviceError> {
+        self.buffer.extend_from_slice(new_data);
+        let mut packets = Vec::new();
+        
+        while let Some(frame) = self.extract_frame() {
+            if let Ok(packet) = decode_packet(&frame) {
+                packets.push(packet);
+            }
+        }
+        
+        Ok(packets)
+    }
+    
+    /// Extract a complete frame from the buffer
+    fn extract_frame(&mut self) -> Option<Vec<u8>> {
+        const FRAME_START: u8 = 0x94;
+        const FRAME_END: u8 = 0x7E;
+        const ESCAPE: u8 = 0x7D;
+        const ESCAPE_XOR: u8 = 0x20;
+        
+        // Find frame boundaries
+        let start_pos = self.buffer.iter().position(|&b| b == FRAME_START)?;
+        let end_pos = self.buffer[start_pos + 1..].iter().position(|&b| b == FRAME_END)? + start_pos + 1;
+        
+        // Extract and remove the frame from buffer
+        let frame_data = self.buffer[start_pos + 1..end_pos].to_vec();
+        self.buffer = self.buffer.split_off(end_pos + 1);
+        
+        // Unescape the frame
+        let mut unescaped = Vec::new();
+        let mut i = 0;
+        while i < frame_data.len() {
+            if frame_data[i] == ESCAPE && i + 1 < frame_data.len() {
+                unescaped.push(frame_data[i + 1] ^ ESCAPE_XOR);
+                i += 2;
+            } else {
+                unescaped.push(frame_data[i]);
+                i += 1;
+            }
+        }
+        
+        // Verify CRC and return payload (without CRC)
+        if unescaped.len() >= 2 {
+            let payload_len = unescaped.len() - 2;
+            let payload = &unescaped[..payload_len];
+            let received_crc = u16::from_le_bytes([unescaped[payload_len], unescaped[payload_len + 1]]);
+            
+            let crc = Crc::<u16>::new(&CRC_16_IBM_3740);
+            let calculated_crc = crc.checksum(payload);
+            
+            if received_crc == calculated_crc {
+                Some(payload.to_vec())
+            } else {
+                eprintln!("CRC mismatch: received {:04x}, calculated {:04x}", received_crc, calculated_crc);
+                None
+            }
+        } else {
+            None
+        }
+    }
+    
+    /// Configure device settings
+    pub async fn configure_radio(&self, config: &RadioConfig) -> Result<(), DeviceError> {
+        let config_packet = MeshPacket {
+            from: self.my_node_num,
+            to: self.my_node_num, // Send to self for configuration
+            id: self.config_id,
+            payload: Some(crate::protocol::PayloadVariant::Admin(config.to_admin_message())),
+            hop_limit: 3,
+            want_ack: true,
+            priority: crate::protocol::MeshPacket_Priority::RELIABLE,
+            rx_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as u32,
+            ..Default::default()
+        };
+        
+        self.send_protobuf_message(&config_packet).await
+    }
+
     async fn write_command(&mut self, command: &str) -> Result<(), DeviceError> {
-        if let Some(ref mut port) = self.port {
+        if let Some(port) = &self.port {
             let command_bytes = format!("{}\n", command).into_bytes();
-            port.write_all(&command_bytes).await?;
-            port.flush().await?;
+            let mut port_guard = port.lock().await;
+            port_guard.write_all(&command_bytes).await?;
+            port_guard.flush().await?;
             Ok(())
         } else {
             Err(DeviceError::ConnectionFailed {
@@ -36,9 +199,10 @@ impl SerialDevice {
     }
 
     async fn read_response(&mut self) -> Result<String, DeviceError> {
-        if let Some(ref mut port) = self.port {
+        if let Some(port) = &self.port {
             let mut buffer = vec![0; 1024];
-            let n = port.read(&mut buffer).await?;
+            let mut port_guard = port.lock().await;
+            let n = port_guard.read(&mut buffer).await?;
             let response = String::from_utf8_lossy(&buffer[..n]).to_string();
             Ok(response)
         } else {
@@ -52,31 +216,49 @@ impl SerialDevice {
 #[async_trait]
 impl Device for SerialDevice {
     async fn connect(&mut self) -> Result<(), DeviceError> {
-        let port = tokio_serial::new(&self.path, 115200)
-            .timeout(Duration::from_secs(5))
-            .open_native_async()
-            .map_err(|e| DeviceError::ConnectionFailed {
-                message: format!("Failed to open serial port: {}", e),
-            })?;
-
-        self.port = Some(port);
-        self.is_connected = true;
-
-        // Test connection by getting device info
-        match self.get_device_info().await {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                self.disconnect().await?;
-                Err(e)
+        // Try different baud rates commonly used by Meshtastic devices
+        let baud_rates = [115200, 921600, 57600, 38400, 19200];
+        let mut last_error = None;
+        
+        for &baud_rate in &baud_rates {
+            println!("[DEBUG] Trying to connect at {} baud", baud_rate);
+            
+            match tokio_serial::new(&self.path, baud_rate)
+                .timeout(Duration::from_secs(2))
+                .open_native_async()
+            {
+                Ok(port) => {
+                    self.port = Some(Arc::new(Mutex::new(port)));
+                    self.is_connected = true;
+                    
+                    // Test connection by checking if we can communicate
+                    if self.is_connected() {
+                        println!("[DEBUG] Successfully connected at {} baud", baud_rate);
+                        return Ok(());
+                    } else {
+                        self.disconnect().await?;
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
             }
         }
+        
+        Err(DeviceError::ConnectionFailed {
+            message: format!("Failed to connect at any baud rate: {:?}", last_error),
+        })
     }
+    
 
     async fn disconnect(&mut self) -> Result<(), DeviceError> {
         if let Some(port) = self.port.take() {
             drop(port);
         }
         self.is_connected = false;
+        self.message_tx = None;
+        self.buffer.clear();
         Ok(())
     }
 
@@ -85,16 +267,24 @@ impl Device for SerialDevice {
     }
 
     async fn send_message(&self, message: &MeshMessage) -> Result<(), DeviceError> {
-        // This would interface with the actual Meshtastic CLI or protocol
-        // For now, simulate the command
-        println!("Sending message: {}", message.text);
+        let mesh_packet = MeshPacket {
+            from: self.my_node_num,
+            to: if message.to == "broadcast" { 0xFFFFFFFF } else { 
+                message.to.parse().unwrap_or(0xFFFFFFFF) 
+            },
+            id: rand::random(),
+            payload: Some(crate::protocol::PayloadVariant::Text(message.text.clone())),
+            hop_limit: 3,
+            want_ack: message.want_ack.unwrap_or(false),
+            priority: crate::protocol::MeshPacket_Priority::DEFAULT,
+            rx_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as u32,
+            ..Default::default()
+        };
         
-        // In a real implementation, this would:
-        // 1. Format the message according to Meshtastic protocol
-        // 2. Send it via the serial connection
-        // 3. Wait for confirmation
-        
-        Ok(())
+        self.send_protobuf_message(&mesh_packet).await
     }
 
     async fn get_nodes(&self) -> Result<Vec<NodeInfo>, DeviceError> {
@@ -115,13 +305,58 @@ impl Device for SerialDevice {
     }
 
     async fn start_listening(&mut self) -> Result<(), DeviceError> {
-        // This would start a background task to listen for incoming messages
-        // and forward them to the message channel
-        Ok(())
+        if let Some(port) = &self.port {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            self.message_tx = Some(tx);
+            
+            let port_clone = Arc::clone(port);
+            let tx_clone = self.message_tx.as_ref().unwrap().clone();
+            
+            // Spawn background task to read from serial port
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 1024];
+                let mut frame_buffer = BytesMut::new();
+                
+                loop {
+                    let mut port_guard = port_clone.lock().await;
+                    match port_guard.read(&mut buffer).await {
+                        Ok(n) if n > 0 => {
+                            drop(port_guard); // Release lock before processing
+                            
+                            frame_buffer.extend_from_slice(&buffer[..n]);
+                            
+                            // Process complete frames
+                            while let Some(frame) = extract_frame_from_buffer(&mut frame_buffer) {
+                                if let Ok(packet) = decode_packet(&frame) {
+                                    if tx_clone.send(packet).is_err() {
+                                        break; // Channel closed, exit task
+                                    }
+                                }
+                            }
+                        }
+                        Ok(_) => {
+                            // No data read, continue
+                            drop(port_guard);
+                            sleep(Duration::from_millis(10)).await;
+                        }
+                        Err(e) => {
+                            eprintln!("Serial read error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+            
+            Ok(())
+        } else {
+            Err(DeviceError::ConnectionFailed {
+                message: "Device not connected".to_string(),
+            })
+        }
     }
 
     async fn stop_listening(&mut self) -> Result<(), DeviceError> {
-        // This would stop the listening task
+        self.message_tx = None;
         Ok(())
     }
 }

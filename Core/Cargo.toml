@@ -27,6 +27,11 @@ base64 = "0.21"
 hex = "0.4"
 bytes = "1.0"
 futures = "0.3"
+crc = "3.0"
+
+# MQTT support
+rumqttc = { version = "0.23", optional = true }
+url = { version = "2.4", optional = true }
 
 # For Swift FFI
 # swift-bridge = "0.1"
@@ -48,3 +53,4 @@ default = ["serial"]
 serial = ["tokio-serial"]
 bluetooth = []
 tcp = []
+mqtt = ["rumqttc", "url"]

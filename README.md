@@ -48,12 +48,50 @@ The new architecture uses:
 - Mesh network topology visualization
 - Cross-platform shared Rust core logic
 
+### ✅ Recently Completed
+- **Comprehensive Carbon Design System Integration**
+  - Complete IBM Carbon Design System color palette with semantic tokens
+  - Full typography scale (Display, Headings, Body, Captions, Code)
+  - Spacing and layout tokens for consistent design
+  - Shadow and animation duration tokens
+  - Comprehensive icon library mapped to SF Symbols
+
+- **Carbon SwiftUI Component Library**
+  - CarbonButton with all 5 button types (Primary, Secondary, Tertiary, Ghost, Danger)
+  - CarbonTextField with labels, validation, and accessibility
+  - CarbonSidebar with collapsible navigation and badges
+  - CarbonModal for dialogs and confirmations
+  - CarbonNotification system with toast notifications
+  - CarbonProgressIndicator (linear and circular, determinate and indeterminate)
+  - CarbonProgressSteps for multi-step workflows
+
+- **Design System Showcase**
+  - Interactive design system documentation and component showcase
+  - Live examples of all colors, typography, components, and spacing
+  - Accessible via "Design System" in the sidebar
+
+### ✅ Recently Completed
+- **Enhanced CoreBluetooth Integration**
+  - Comprehensive Bluetooth Low Energy (BLE) support for Meshtastic devices
+  - Real-time connection progress tracking with visual indicators
+  - Signal strength monitoring (RSSI) with quality assessment
+  - Automatic device discovery and reconnection capabilities
+  - Connection error handling with user-friendly error messages
+  - Multi-step connection process visualization
+
+- **Advanced Bluetooth UI Components**
+  - Carbon Design System integrated Bluetooth device views
+  - Enhanced device connection assistant with progress tracking
+  - Signal strength indicators with visual bars and color coding
+  - Detailed device information and technical specifications view
+  - Connection status monitoring with real-time updates
+  - Interactive device discovery with filtering and sorting
+
 ### 🚧 In Development
-- Bluetooth device connectivity (BLE + RFCOMM)
-- Centralized theming system (IBM Carbon Design inspired)
 - Advanced radio settings (SF, BW, TX Power)
 - Message delivery acknowledgments and retry logic
 - Full Meshtastic protocol compliance
+- RFCOMM support for legacy Bluetooth devices
 
 ### 📋 Planned
 - Native iOS application

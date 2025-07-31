@@ -23,6 +23,8 @@ pub enum DeviceError {
     Timeout,
     #[error("Invalid response")]
     InvalidResponse,
+    #[error("Invalid configuration: {message}")]
+    InvalidConfiguration { message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

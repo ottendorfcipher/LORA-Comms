@@ -1,6 +1,9 @@
+pub mod bridge;
 pub mod device;
 pub mod protocol;
-pub mod bridge;
+pub mod radio;
+#[cfg(feature = "mqtt")]
+pub mod mqtt;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -127,12 +130,15 @@ impl LoraCommsManager {
             })?;
 
         let mesh_message = MeshMessage {
-            id: Uuid::new_v4().to_string(),
+            from: "local".to_string(),
+            to: destination.unwrap_or("broadcast").to_string(),
             text: message.to_string(),
-            sender: "local".to_string(),
-            destination: destination.map(|s| s.to_string()),
             timestamp: Utc::now(),
-            is_from_me: true,
+            want_ack: Some(false),
+            packet_id: Some(rand::random()),
+            hop_limit: Some(3),
+            channel: Some(0),
+            message_type: MessageType::Text,
         };
 
         device.send_message(&mesh_message).await?;

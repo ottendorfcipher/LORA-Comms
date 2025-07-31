@@ -13,6 +13,7 @@ struct ContentView: View {
     @EnvironmentObject var themeManager: ThemeManager
     @StateObject private var deviceManager = DeviceManager()
     @StateObject private var meshtasticManager: MeshtasticManager
+    @StateObject private var notificationManager = CarbonNotificationManager()
     
     @State private var selectedSidebarItem: String? = "chats"
     @State private var isSidebarCollapsed = false
@@ -42,10 +43,25 @@ struct ContentView: View {
                 DeviceListView(deviceManager: deviceManager)
             case "network":
                 NetworkVisualizerView(meshtasticManager: meshtasticManager)
+            case "carbon-showcase":
+                CarbonShowcaseView()
             default:
-                Text("Select a section")
-                    .foregroundColor(themeManager.theme.textSecondaryColor)
-                    .font(themeManager.theme.font)
+                VStack(spacing: CarbonTheme.Spacing.spacing04) {
+                    CarbonTheme.Icons.home
+                        .foregroundColor(CarbonTheme.ColorPalette.textSecondary)
+                        .font(.system(size: 48))
+                    
+                    Text("Welcome to LORA Comms")
+                        .font(CarbonTheme.Typography.heading03)
+                        .foregroundColor(CarbonTheme.ColorPalette.textPrimary)
+                    
+                    Text("Select a section from the sidebar to get started")
+                        .font(CarbonTheme.Typography.body01)
+                        .foregroundColor(CarbonTheme.ColorPalette.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(CarbonTheme.ColorPalette.background)
             }
         } detail: {
             // Detail view based on primary content selection
@@ -65,8 +81,10 @@ struct ContentView: View {
             }
         }
         .navigationTitle("LORA Comms")
-        .background(themeManager.theme.backgroundColor)
-        .foregroundColor(themeManager.theme.textColor)
+        .background(CarbonTheme.ColorPalette.background)
+        .foregroundColor(CarbonTheme.ColorPalette.textPrimary)
+        .carbonNotifications(manager: notificationManager)
+        .environmentObject(notificationManager)
     }
     
     private var sidebarItems: [SidebarItem] {
@@ -74,7 +92,8 @@ struct ContentView: View {
             SidebarItem(id: "chats", title: "Chats", icon: "message", badge: "3"),
             SidebarItem(id: "devices", title: "Devices", icon: "antenna.radiowaves.left.and.right"),
             SidebarItem(id: "network", title: "Network", icon: "network"),
-            SidebarItem(id: "settings", title: "Settings", icon: "gear")
+            SidebarItem(id: "settings", title: "Settings", icon: "gear"),
+            SidebarItem(id: "carbon-showcase", title: "Design System", icon: "paintbrush")
         ]
     }
 }

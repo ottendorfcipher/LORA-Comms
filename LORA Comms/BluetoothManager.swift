@@ -15,7 +15,7 @@ public class BluetoothManager: NSObject, ObservableObject {
     
     // Core Bluetooth objects
     private var centralManager: CBCentralManager!
-    private var connectedPeripheral: CBPeripheral?
+    var connectedPeripheral: CBPeripheral?
     private var toRadioCharacteristic: CBCharacteristic?
     private var fromRadioCharacteristic: CBCharacteristic?
     private var fromNumCharacteristic: CBCharacteristic?
@@ -26,7 +26,53 @@ public class BluetoothManager: NSObject, ObservableObject {
     @Published public var connectionState: BluetoothConnectionState = .disconnected
     @Published public var signalStrength: Int?
     @Published public var lastPacketTime: Date?
+    @Published public var bluetoothState: CBManagerState = .unknown
+    @Published public var connectionProgress: ConnectionProgress = .idle
+    @Published public var lastError: BluetoothError?
+    @Published public var connectedDevices: [MeshtasticDevice] = []
+    @Published public var isBackgroundScanning = false
     
+    // Connection progress
+    public enum ConnectionProgress {
+        case idle
+        case scanning
+        case connecting
+        case discoveringServices
+        case discoveringCharacteristics
+        case establishingConnection
+        case completed
+        
+        var description: String {
+            switch self {
+            case .idle: return "Idle"
+            case .scanning: return "Scanning"
+            case .connecting: return "Connecting"
+            case .discoveringServices: return "Discovering Services"
+            case .discoveringCharacteristics: return "Discovering Characteristics"
+            case .establishingConnection: return "Establishing Connection"
+            case .completed: return "Completed"
+            }
+        }
+    }   
+
+    public enum BluetoothError: Error, CustomStringConvertible {
+        case bluetoothNotAvailable
+        case peripheralNotFound
+        case characteristicNotFound
+        case unableToConnect
+        case dataTransmissionError
+
+        public var description: String {
+            switch self {
+            case .bluetoothNotAvailable: return "Bluetooth is not available."
+            case .peripheralNotFound: return "Peripheral not found."
+            case .characteristicNotFound: return "Required characteristic not found."
+            case .unableToConnect: return "Unable to establish connection."
+            case .dataTransmissionError: return "Error transmitting data."
+            }
+        }
+    }
+
     // Message handling
     private var incomingBuffer = Data()
     private let maxPacketSize = 512
@@ -38,15 +84,20 @@ public class BluetoothManager: NSObject, ObservableObject {
     }
     
     // MARK: - Public Interface
+
+    // Auto-reconnect toggles
+    private var autoReconnect = true
     
     public func startScanning() {
         guard centralManager.state == .poweredOn else {
             print("[BluetoothManager] Bluetooth not available")
+            lastError = .bluetoothNotAvailable
             return
         }
         
         print("[BluetoothManager] Starting scan for Meshtastic devices")
         isScanning = true
+        connectionProgress = .scanning
         discoveredDevices.removeAll()
         
         centralManager.scanForPeripherals(
@@ -66,17 +117,23 @@ public class BluetoothManager: NSObject, ObservableObject {
         print("[BluetoothManager] Stopping scan")
         centralManager.stopScan()
         isScanning = false
+        connectionProgress = .idle
     }
     
     public func connect(to device: MeshtasticDevice) {
         guard let peripheral = device.peripheral else {
             print("[BluetoothManager] No peripheral found for device")
+            lastError = .peripheralNotFound
             return
         }
         
         print("[BluetoothManager] Connecting to \(device.name)")
         connectionState = .connecting
+        connectionProgress = .connecting
         centralManager.connect(peripheral, options: nil)
+        
+        // Monitor RSSI for signal strength evaluation
+        peripheral.readRSSI()
     }
     
     public func disconnect() {
@@ -87,6 +144,14 @@ public class BluetoothManager: NSObject, ObservableObject {
         
         print("[BluetoothManager] Disconnecting from \(peripheral.name ?? "Unknown")")
         centralManager.cancelPeripheralConnection(peripheral)
+        connectionProgress = .idle
+        
+        // Attempt automatic reconnect if enabled
+        if autoReconnect {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                self.startScanning()
+            }
+        }
     }
     
     public func sendToRadio(_ data: Data) async -> Bool {
@@ -94,6 +159,7 @@ public class BluetoothManager: NSObject, ObservableObject {
               let peripheral = connectedPeripheral,
               connectionState == .connected else {
             print("[BluetoothManager] Not connected or missing characteristic")
+            lastError = .characteristicNotFound
             return false
         }
         
@@ -113,7 +179,8 @@ public class BluetoothManager: NSObject, ObservableObject {
                 try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
             }
         }
-        
+
+        connectionProgress = .completed
         return true
     }
     
@@ -190,14 +257,21 @@ extension BluetoothManager: CBCentralManagerDelegate {
         let state = central.state
         Task { @MainActor in
             print("[BluetoothManager] Bluetooth state: \(state.description)")
+            self.bluetoothState = state
             
             switch state {
             case .poweredOn:
                 // Ready to scan
+                self.lastError = nil
                 break
-            case .poweredOff, .unauthorized, .unsupported:
+            case .poweredOff:
                 self.connectionState = .disconnected
                 self.isScanning = false
+                self.lastError = .bluetoothNotAvailable
+            case .unauthorized, .unsupported:
+                self.connectionState = .disconnected
+                self.isScanning = false
+                self.lastError = .bluetoothNotAvailable
             default:
                 break
             }
@@ -229,6 +303,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
             
             self.connectedPeripheral = peripheral
             peripheral.delegate = self
+            self.connectionProgress = .discoveringServices
             
             // Discover services
             peripheral.discoverServices([Self.meshtasticServiceUUID])
@@ -268,13 +343,17 @@ extension BluetoothManager: CBPeripheralDelegate {
         Task { @MainActor in
             if let error = error {
                 print("[BluetoothManager] Service discovery error: \(error.localizedDescription)")
+                self.lastError = .unableToConnect
                 return
             }
             
             guard let services = peripheral.services else {
                 print("[BluetoothManager] No services found")
+                self.lastError = .unableToConnect
                 return
             }
+            
+            self.connectionProgress = .discoveringCharacteristics
             
             for service in services {
                 if service.uuid == Self.meshtasticServiceUUID {
@@ -293,9 +372,11 @@ extension BluetoothManager: CBPeripheralDelegate {
         Task { @MainActor in
             if let error = error {
                 print("[BluetoothManager] Characteristic discovery error: \(error.localizedDescription)")
+                self.lastError = .characteristicNotFound
                 return
             }
             
+            self.connectionProgress = .establishingConnection
             self.setupCharacteristics(for: peripheral)
         }
     }
@@ -345,6 +426,15 @@ public struct MeshtasticDevice: Identifiable, Hashable {
     
     public init(peripheral: CBPeripheral, name: String, rssi: Int) {
         self.id = peripheral.identifier.uuidString
+        self.peripheral = peripheral
+        self.name = name
+        self.rssi = rssi
+        self.discoveredAt = Date()
+    }
+    
+    // Initializer for preview/testing purposes
+    public init(peripheral: CBPeripheral?, name: String, rssi: Int) {
+        self.id = peripheral?.identifier.uuidString ?? UUID().uuidString
         self.peripheral = peripheral
         self.name = name
         self.rssi = rssi
